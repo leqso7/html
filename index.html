@@ -55,17 +55,23 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
 /* ===== გადაადგილება (drag & drop) ===== */
 .fab.move{background:#0f5c8a}
 body.moving tbody tr:not(.day){cursor:grab;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-body.moving tbody tr:not(.day):active{cursor:grabbing}
 body.dragging{-webkit-user-select:none;user-select:none}
-body.dragging tbody tr:not(.day){transition:none}
 tbody tr.drag-src{opacity:.32;filter:grayscale(.3)}
 tbody tr.drop-before{box-shadow:inset 0 3px 0 0 #0f5c8a}
 tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
+tbody tr.picked{outline:3px solid #0f5c8a;outline-offset:-3px}
+.grip{display:none;float:right;width:30px;height:30px;margin:-3px -3px 0 6px;align-items:center;justify-content:center;border-radius:8px;background:rgba(23,78,60,.1);color:#174e3c;font-size:15px;line-height:1;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.grip:active{background:rgba(23,78,60,.24)}
+@media (max-width:700px){body.moving .grip{display:flex}}
+.pickbar{position:fixed;left:10px;right:72px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:95;display:flex;align-items:center;gap:10px;background:#0f5c8a;color:#fff;border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.35;box-shadow:0 12px 30px #0000003d}
+.pickbar[hidden]{display:none}
+.pickbar span{min-width:0}
+.pickbar button{margin-left:auto;flex:0 0 auto;border:0;background:rgba(255,255,255,.2);color:#fff;font:inherit;font-size:12px;font-weight:700;padding:7px 11px;border-radius:9px;cursor:pointer}
 .drag-holder{position:fixed;top:0;left:0;z-index:200;pointer-events:none;will-change:transform;transform:translate(0,0)}
 .drag-holder table{width:100%;border-collapse:collapse;background:transparent;margin:0}
 .drag-holder tbody{border:0!important;padding:0!important;margin:0!important;background:transparent}
 .drag-holder tr{background:#fff;box-shadow:0 18px 40px #0000002e;border-radius:10px;overflow:hidden;margin:0!important;opacity:1}
-@media print{.fab,.sheet,.toast{display:none!important}body.editing [data-ed]{outline:0!important}}
+@media print{.fab,.sheet,.toast,.pickbar,.grip{display:none!important}body.editing [data-ed]{outline:0!important}}
 </style>
 </head>
 <body><main>
@@ -102,6 +108,10 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
 </div>
 <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 <div class="toast" id="toast" hidden></div>
+<div class="pickbar" id="pickbar" hidden>
+  <span>აირჩიე სად გადავიტანო — შეეხე სამიზნე ბარათს</span>
+  <button type="button" id="pickCancel">გაუქმება</button>
+</div>
 
 <script>
 /* ===== ცხრილის რედაქტირება, გადაადგილება და ლოკალური შენახვა ===== */
@@ -141,7 +151,7 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
   });
 
   var eds = Array.prototype.slice.call(table.querySelectorAll("[data-ed]"));
-  var ORIGINAL = eds.map(function (el) { return el.innerHTML; });
+  var ORIGINAL = eds.map(function (el) { return cellHTML(el); });
 
   var ORIG_ORDER = {};
   tbs.forEach(function (tb) {
@@ -160,7 +170,7 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
 
   function snapshot() {
     var cells = {}, order = {};
-    eds.forEach(function (el) { cells[el.getAttribute("data-ed")] = el.innerHTML; });
+    eds.forEach(function (el) { cells[el.getAttribute("data-ed")] = cellHTML(el); });
     tbs.forEach(function (tb) { order[tb.getAttribute("data-did")] = orderOf(tb); });
     return { v: 2, cells: cells, order: order, savedAt: new Date().toISOString() };
   }
@@ -243,8 +253,15 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
     fab.textContent = on ? "⇅" : "✎";
     fab.setAttribute("aria-label", on ? "გადაადგილების დასრულება" : "რედაქტირება");
     moveBtn.textContent = on ? "გადაადგილების დასრულება" : "გადაადგილება (drag & drop)";
-    if (on) toast("დაიჭირე ჩანაწერი და გადაიტანე სხვა დღეზე");
-    else { save(); toast("შენახულია"); }
+    if (on) {
+      addGrips();
+      toast("გადაათრიე ⠿ ან შეეხე ბარათს");
+    } else {
+      removeGrips();
+      unpick();
+      save();
+      toast("შენახულია");
+    }
   }
 
   /* ---------- ტექსტის რედაქტირება ---------- */
@@ -271,8 +288,9 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
   window.addEventListener("beforeunload", save);
   document.addEventListener("visibilitychange", function () { if (document.hidden) save(); });
 
-  /* ---------- Drag & drop ---------- */
-  var drag = null, drop = null;
+  /* ---------- გადაადგილება: სახელური + შეხებით გადატანა ---------- */
+  var drag = null, drop = null, picked = null, lastDragEnd = 0;
+  var pickbar = document.getElementById("pickbar");
 
   function lessonRow(node) {
     var tr = node && node.closest ? node.closest("tr") : null;
@@ -280,6 +298,90 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
     return tr;
   }
 
+  function addGrips() {
+    Array.prototype.forEach.call(table.querySelectorAll("tr:not(.day)"), function (tr) {
+      if (tr.querySelector(".grip")) return;
+      var c = tr.children[0];
+      if (!c) return;
+      var g = document.createElement("span");
+      g.className = "grip";
+      g.setAttribute("aria-hidden", "true");
+      g.textContent = "⠿";
+      c.insertBefore(g, c.firstChild);
+    });
+  }
+
+  function removeGrips() {
+    Array.prototype.forEach.call(table.querySelectorAll(".grip"), function (g) {
+      if (g.parentNode) g.parentNode.removeChild(g);
+    });
+  }
+
+  function cellHTML(el) {
+    var c = el.cloneNode(true);
+    Array.prototype.forEach.call(c.querySelectorAll(".grip"), function (g) {
+      if (g.parentNode) g.parentNode.removeChild(g);
+    });
+    return c.innerHTML;
+  }
+
+  function pick(tr) {
+    if (!tr || tr.classList.contains("day")) return;
+    if (picked === tr) { unpick(); return; }
+    unpick();
+    picked = tr;
+    tr.classList.add("picked");
+    if (pickbar) pickbar.hidden = false;
+  }
+
+  function unpick() {
+    if (picked) picked.classList.remove("picked");
+    picked = null;
+    if (pickbar) pickbar.hidden = true;
+  }
+
+  /* ---- მიზნის განსაზღვრა ---- */
+  function resolveTarget(x, y, exclude) {
+    var el = document.elementFromPoint(x, y);
+    var tb = el && el.closest ? el.closest("tbody") : null;
+    if (!tb || !table.contains(tb)) return null;
+    var row = el.closest("tr");
+    var lessons = Array.prototype.slice.call(tb.querySelectorAll("tr:not(.day)"));
+    if (!lessons.length) return { tb: tb, ref: null, marker: null };
+    if (row && row.classList.contains("day")) {
+      return { tb: tb, ref: lessons[0], marker: lessons[0], pos: "before" };
+    }
+    if (row && lessons.indexOf(row) >= 0) {
+      var rr = row.getBoundingClientRect();
+      if (y < rr.top + rr.height / 2) {
+        return { tb: tb, ref: row, marker: row, pos: "before" };
+      }
+      var nx = row.nextElementSibling;
+      return { tb: tb, ref: (nx && !nx.classList.contains("day")) ? nx : null, marker: row, pos: "after" };
+    }
+    return { tb: tb, ref: null, marker: lessons[lessons.length - 1], pos: "after" };
+  }
+
+  function clearMarkers() {
+    Array.prototype.forEach.call(table.querySelectorAll(".drop-before,.drop-after"), function (el) {
+      el.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function mark(t) {
+    clearMarkers();
+    if (t && t.marker) t.marker.classList.add(t.pos === "before" ? "drop-before" : "drop-after");
+  }
+
+  function moveTo(tr, t) {
+    if (!t || !t.tb) return false;
+    if (t.ref === tr) return false;
+    if (t.ref) t.tb.insertBefore(tr, t.ref);
+    else t.tb.appendChild(tr);
+    return true;
+  }
+
+  /* ---- მოჩვენებითი ბარათი ---- */
   function beginDrag() {
     var tr = drag.tr, r = tr.getBoundingClientRect();
     drag.active = true;
@@ -299,6 +401,9 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
       el.removeAttribute("data-ed");
       el.removeAttribute("contenteditable");
     });
+    Array.prototype.forEach.call(clone.querySelectorAll(".grip"), function (g) {
+      if (g.parentNode) g.parentNode.removeChild(g);
+    });
     tb.appendChild(clone);
     tbl.appendChild(tb);
     holder.appendChild(tbl);
@@ -307,6 +412,7 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
     drag.holder = holder;
     tr.classList.add("drag-src");
     document.body.classList.add("dragging");
+    unpick();
     moveGhost(drag.lx, drag.ly);
     if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
   }
@@ -315,40 +421,6 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
     if (!drag || !drag.holder) return;
     var base = parseFloat(drag.holder.style.left) || 0;
     drag.holder.style.transform = "translate(" + (x - drag.ox - base) + "px," + (y - drag.oy) + "px)";
-  }
-
-  function clearMarkers() {
-    Array.prototype.forEach.call(table.querySelectorAll(".drop-before,.drop-after"), function (el) {
-      el.classList.remove("drop-before", "drop-after");
-    });
-  }
-
-  function hover(x, y) {
-    var el = document.elementFromPoint(x, y);
-    var target = null;
-    var tb = el && el.closest ? el.closest("tbody") : null;
-    if (tb && table.contains(tb)) {
-      var row = el.closest("tr");
-      var lessons = Array.prototype.slice.call(tb.querySelectorAll("tr:not(.day)"));
-      if (!lessons.length) {
-        target = { tb: tb, ref: null, marker: null };
-      } else if (row && row.classList.contains("day")) {
-        target = { tb: tb, ref: lessons[0], marker: lessons[0], pos: "before" };
-      } else if (row && lessons.indexOf(row) >= 0) {
-        var rr = row.getBoundingClientRect();
-        if (y < rr.top + rr.height / 2) {
-          target = { tb: tb, ref: row, marker: row, pos: "before" };
-        } else {
-          var nx = row.nextElementSibling;
-          target = { tb: tb, ref: (nx && !nx.classList.contains("day")) ? nx : null, marker: row, pos: "after" };
-        }
-      } else {
-        target = { tb: tb, ref: null, marker: lessons[lessons.length - 1], pos: "after" };
-      }
-    }
-    clearMarkers();
-    if (target && target.marker) target.marker.classList.add(target.pos === "before" ? "drop-before" : "drop-after");
-    drop = target;
   }
 
   var scrollTimer = null, scrollDir = 0;
@@ -368,7 +440,9 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
     window.scrollBy(0, scrollDir * 12);
     if (window.scrollY !== prev) {
       moveGhost(drag.lx, drag.ly);
-      hover(drag.lx, drag.ly);
+      var t = resolveTarget(drag.lx, drag.ly);
+      mark(t);
+      drop = t;
     }
   }
 
@@ -382,95 +456,81 @@ tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
   }
 
   function endDrag() {
-    var tr = drag.tr;
-    if (drop && drop.tb && table.contains(drop.tb)) {
-      if (drop.ref && drop.ref !== tr) drop.tb.insertBefore(tr, drop.ref);
-      else if (!drop.ref) drop.tb.appendChild(tr);
-    }
+    if (drop) moveTo(drag.tr, drop);
     cleanupDrag();
     drop = null;
+    lastDragEnd = Date.now();
     save();
     toast("გადატანილია · შენახულია");
   }
 
-  function cancelDrag() {
-    if (!drag) return;
-    clearTimeout(drag.timer);
-    if (drag.active) cleanupDrag();
-    drag = null;
-    drop = null;
-  }
-
-  /* --- touch --- */
-  function tStart(e) {
-    if (!moving || drag || e.touches.length !== 1) return;
-    var tr = lessonRow(e.target);
-    if (!tr) return;
-    var t = e.touches[0];
-    drag = { tr: tr, x0: t.clientX, y0: t.clientY, lx: t.clientX, ly: t.clientY, active: false };
-    drag.timer = setTimeout(function () { if (drag && !drag.active) beginDrag(); }, 300);
-  }
-
-  function tMove(e) {
-    if (!drag) return;
-    var t = e.touches[0];
-    drag.lx = t.clientX; drag.ly = t.clientY;
-    if (!drag.active) {
-      var dx = t.clientX - drag.x0, dy = t.clientY - drag.y0;
-      if (dx * dx + dy * dy > 120) cancelDrag();
-      return;
-    }
-    e.preventDefault();
-    moveGhost(t.clientX, t.clientY);
-    hover(t.clientX, t.clientY);
-    edgeScroll(t.clientY);
-  }
-
-  function tEnd() {
-    if (!drag) return;
-    clearTimeout(drag.timer);
-    if (drag.active) endDrag();
-    drag = null;
-  }
-
-  /* --- mouse --- */
-  function mDown(e) {
-    if (!moving || drag || e.button !== 0) return;
-    var tr = lessonRow(e.target);
-    if (!tr) return;
-    drag = { tr: tr, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, active: false };
-    document.addEventListener("mousemove", mMove);
-    document.addEventListener("mouseup", mUp);
-  }
-
-  function mMove(e) {
+  /* ---- სახელურიდან თრევა (Pointer Events) ---- */
+  function pMove(e) {
     if (!drag) return;
     drag.lx = e.clientX; drag.ly = e.clientY;
     if (!drag.active) {
       var dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
-      if (dx * dx + dy * dy < 30) return;
+      if (dx * dx + dy * dy < 20) return;
       beginDrag();
     }
-    e.preventDefault();
+    if (e.cancelable) e.preventDefault();
     moveGhost(e.clientX, e.clientY);
-    hover(e.clientX, e.clientY);
+    var t = resolveTarget(e.clientX, e.clientY);
+    mark(t);
+    drop = t;
     edgeScroll(e.clientY);
   }
 
-  function mUp() {
-    document.removeEventListener("mousemove", mMove);
-    document.removeEventListener("mouseup", mUp);
+  function pUp() {
+    document.removeEventListener("pointermove", pMove);
+    document.removeEventListener("pointerup", pUp);
+    document.removeEventListener("pointercancel", pUp);
     if (!drag) return;
     if (drag.active) endDrag();
     drag = null;
   }
 
-  table.addEventListener("touchstart", tStart, { passive: true });
-  document.addEventListener("touchmove", tMove, { passive: false });
-  document.addEventListener("touchend", tEnd);
-  document.addEventListener("touchcancel", tEnd);
-  table.addEventListener("mousedown", mDown);
-  document.addEventListener("contextmenu", function (e) { if (drag && drag.active) e.preventDefault(); });
+  table.addEventListener("pointerdown", function (e) {
+    if (!moving || drag) return;
+    var g = e.target.closest ? e.target.closest(".grip") : null;
+    var tr = g ? g.closest("tr") : null;
+
+    if (!tr && e.pointerType === "mouse") tr = lessonRow(e.target);  // დესკტოპზე მთლიანი ბლოკი
+    if (!tr) return;
+
+    e.preventDefault();
+    drag = { tr: tr, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, active: false };
+    document.addEventListener("pointermove", pMove, { passive: false });
+    document.addEventListener("pointerup", pUp);
+    document.addEventListener("pointercancel", pUp);
+  });
+
+  /* ---- შეხებით გადატანა: აირჩიე → დანიშნე ---- */
+  table.addEventListener("click", function (e) {
+    if (!moving) return;
+    if (Date.now() - lastDragEnd < 400) return;
+    if (e.target.closest && e.target.closest(".grip")) return;
+
+    var tr = e.target.closest ? e.target.closest("tr") : null;
+    if (!tr || !table.contains(tr)) return;
+
+    if (!picked) {
+      if (!tr.classList.contains("day")) pick(tr);
+      return;
+    }
+    if (tr === picked) { unpick(); return; }
+
+    var t = resolveTarget(e.clientX, e.clientY);
+    if (moveTo(picked, t)) { unpick(); save(); toast("გადატანილია · შენახულია"); }
+    else unpick();
+  });
+
+  if (pickbar) {
+    document.getElementById("pickCancel").addEventListener("click", function () {
+      unpick();
+      toast("გაუქმდა");
+    });
+  }
 
   /* ---------- მოდელი: ექსპორტი / იმპორტი ---------- */
   function txt(el) { return el ? el.textContent.replace(/\s+/g, " ").trim() : ""; }
