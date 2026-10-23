@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>სააუდიტორიო ცხრილი</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="სააუდიტორიო ცხრილი">
+<meta name="mobile-web-app-capable" content="yes">
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f3f6f4;color:#18312b;font-family:Arial,"Noto Sans Georgian",sans-serif;line-height:1.6}
 main{max-width:1280px;margin:40px auto;padding:0 24px}
@@ -45,4 +51,13 @@ footer{margin:8px 10px 0;font-size:11px}}
 <tbody><tr class="day"><th colspan="5" scope="rowgroup">პარასკევი <small>II კორპუსი</small></th></tr><tr><td class="time">13:00 – 14:50</td><th scope="row">ფიზიკის შესავალი</th><td><span class="badge">პრაქტიკული</span></td><td>ჭაბუკიანი თორნიკე</td><td class="room">346</td></tr>
 <tr><td class="time">15:00 – 16:50</td><th scope="row">ფიზიკის შესავალი</th><td><span class="badge">ლექცია</span></td><td>ჭელიძე თამარ</td><td class="room">346</td></tr></tbody>
 </table></div><footer>5 სასწავლო დღე · 13 მეცადინეობა · მონაცემები მოწოდებული ტექსტის მიხედვით</footer>
-</main></body></html>
+</main>
+<script>
+/* ოფლაინ რეჟიმი — არსებითად არ ცვლის გვერდს */
+if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
+  });
+}
+</script>
+</body></html>
