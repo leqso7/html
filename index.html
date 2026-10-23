@@ -50,6 +50,8 @@ footer{margin:8px 10px 0;font-size:11px}}
 body.editing [data-ed]{outline:1px dashed #174e3c59;outline-offset:1px;border-radius:4px;cursor:text;min-width:20px}
 body.editing [data-ed]:focus{outline:2px solid #174e3c;background:#fffbe8}
 body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
+/* iOS: 16px აცილებს ავტომატურ ზუმს ტექსტის რედაქტირებისას */
+@media (max-width:700px){body.editing [data-ed]{font-size:16px;line-height:1.4}}
 @media print{.fab,.sheet,.toast{display:none!important}body.editing [data-ed]{outline:0!important}}
 </style>
 </head>
