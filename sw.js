@@ -1,5 +1,5 @@
 /* ოფლაინ cache — აპლიკაცია მუშაობს ინტერნეტის გარეშე */
-var CACHE = "ganrigi-v2";
+var CACHE = "ganrigi-v3";
 
 var ASSETS = [
   "./",

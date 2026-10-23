@@ -52,6 +52,19 @@ body.editing [data-ed]:focus{outline:2px solid #174e3c;background:#fffbe8}
 body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
 /* iOS: 16px აცილებს ავტომატურ ზუმს ტექსტის რედაქტირებისას */
 @media (max-width:700px){body.editing [data-ed]{font-size:16px;line-height:1.4}}
+/* ===== გადაადგილება (drag & drop) ===== */
+.fab.move{background:#0f5c8a}
+body.moving tbody tr:not(.day){cursor:grab;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+body.moving tbody tr:not(.day):active{cursor:grabbing}
+body.dragging{-webkit-user-select:none;user-select:none}
+body.dragging tbody tr:not(.day){transition:none}
+tbody tr.drag-src{opacity:.32;filter:grayscale(.3)}
+tbody tr.drop-before{box-shadow:inset 0 3px 0 0 #0f5c8a}
+tbody tr.drop-after{box-shadow:inset 0 -3px 0 0 #0f5c8a}
+.drag-holder{position:fixed;top:0;left:0;z-index:200;pointer-events:none;will-change:transform;transform:translate(0,0)}
+.drag-holder table{width:100%;border-collapse:collapse;background:transparent;margin:0}
+.drag-holder tbody{border:0!important;padding:0!important;margin:0!important;background:transparent}
+.drag-holder tr{background:#fff;box-shadow:0 18px 40px #0000002e;border-radius:10px;overflow:hidden;margin:0!important;opacity:1}
 @media print{.fab,.sheet,.toast{display:none!important}body.editing [data-ed]{outline:0!important}}
 </style>
 </head>
@@ -79,6 +92,7 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
   <div class="sheet-box" role="dialog" aria-modal="true" aria-label="ცხრილის პარამეტრები">
     <div class="sheet-title">ცვლილებები ინახება ამ მოწყობილობაზე</div>
     <button type="button" data-act="edit" id="editBtn">რედაქტირების ჩართვა</button>
+    <button type="button" data-act="move" id="moveBtn">გადაადგილება (drag &amp; drop)</button>
     <button type="button" data-act="export-json">ექსპორტი — ტექსტი (.json)</button>
     <button type="button" data-act="export-txt">ექსპორტი — მარტივი ტექსტი (.txt)</button>
     <button type="button" data-act="import">იმპორტი ფაილიდან</button>
@@ -90,9 +104,10 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
 <div class="toast" id="toast" hidden></div>
 
 <script>
-/* ===== ცხრილის რედაქტირება + ლოკალური შენახვა ===== */
+/* ===== ცხრილის რედაქტირება, გადაადგილება და ლოკალური შენახვა ===== */
 (function () {
-  var KEY = "cxrili-text-v1";
+  var KEY = "cxrili-v2";
+  var LEGACY = "cxrili-text-v1";
   var table = document.querySelector("table");
   if (!table) return;
 
@@ -100,43 +115,78 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
   var sheet = document.getElementById("sheet");
   var toastEl = document.getElementById("toast");
   var editBtn = document.getElementById("editBtn");
+  var moveBtn = document.getElementById("moveBtn");
   var fileInput = document.getElementById("importFile");
   var toastTimer, saveTimer;
 
-  /* ---- რედაქტირებადი უჯრების მონიშვნა ---- */
-  var eds = [];
-  Array.prototype.forEach.call(table.querySelectorAll("tbody"), function (tb) {
+  /* ---------- სტაბილური იდენტიფიკატორები ---------- */
+  var tbs = Array.prototype.slice.call(table.querySelectorAll("tbody"));
+  var ridSeq = 0;
+
+  tbs.forEach(function (tb, di) {
+    tb.setAttribute("data-did", "d" + di);
     var head = tb.querySelector("tr.day th");
-    if (head) eds.push(head);
+    if (head) head.setAttribute("data-ed", "d" + di + "-head");
     Array.prototype.forEach.call(tb.querySelectorAll("tr:not(.day)"), function (tr) {
+      var rid = "r" + (ridSeq++);
+      tr.setAttribute("data-rid", rid);
       var c = tr.children;
-      if (c[0]) eds.push(c[0]);                 // დრო
-      if (c[1]) eds.push(c[1]);                 // კურსი
+      if (c[0]) c[0].setAttribute("data-ed", rid + "-time");
+      if (c[1]) c[1].setAttribute("data-ed", rid + "-course");
       var b = c[2] && c[2].querySelector(".badge");
-      if (b) eds.push(b);                       // ტიპი
-      if (c[3]) eds.push(c[3]);                 // პედაგოგი
-      if (c[4]) eds.push(c[4]);                 // აუდიტორია
+      if (b) b.setAttribute("data-ed", rid + "-type");
+      if (c[3]) c[3].setAttribute("data-ed", rid + "-teacher");
+      if (c[4]) c[4].setAttribute("data-ed", rid + "-room");
     });
   });
-  eds.forEach(function (el, i) { el.setAttribute("data-ed", "c" + i); });
 
+  var eds = Array.prototype.slice.call(table.querySelectorAll("[data-ed]"));
   var ORIGINAL = eds.map(function (el) { return el.innerHTML; });
 
-  function read() {
-    var o = {};
-    eds.forEach(function (el) { o[el.getAttribute("data-ed")] = el.innerHTML; });
-    return o;
-  }
-  function applyMap(map) {
-    eds.forEach(function (el) {
-      var v = map[el.getAttribute("data-ed")];
-      if (typeof v === "string") el.innerHTML = v;
+  var ORIG_ORDER = {};
+  tbs.forEach(function (tb) {
+    ORIG_ORDER[tb.getAttribute("data-did")] = Array.prototype.map.call(
+      tb.querySelectorAll("tr:not(.day)"),
+      function (tr) { return tr.getAttribute("data-rid"); }
+    );
+  });
+
+  /* ---------- შენახვა / აღდგენა ---------- */
+  function orderOf(tb) {
+    return Array.prototype.map.call(tb.querySelectorAll("tr:not(.day)"), function (tr) {
+      return tr.getAttribute("data-rid");
     });
   }
 
-  /* ---- ავტომატური შენახვა ---- */
+  function snapshot() {
+    var cells = {}, order = {};
+    eds.forEach(function (el) { cells[el.getAttribute("data-ed")] = el.innerHTML; });
+    tbs.forEach(function (tb) { order[tb.getAttribute("data-did")] = orderOf(tb); });
+    return { v: 2, cells: cells, order: order, savedAt: new Date().toISOString() };
+  }
+
+  function restore(s) {
+    if (!s) return;
+    if (s.order) {
+      Object.keys(s.order).forEach(function (did) {
+        var tb = table.querySelector('tbody[data-did="' + did + '"]');
+        if (!tb) return;
+        (s.order[did] || []).forEach(function (rid) {
+          var tr = table.querySelector('tr[data-rid="' + rid + '"]');
+          if (tr) tb.appendChild(tr);
+        });
+      });
+    }
+    if (s.cells) {
+      Object.keys(s.cells).forEach(function (k) {
+        var el = table.querySelector('[data-ed="' + k + '"]');
+        if (el) el.innerHTML = s.cells[k];
+      });
+    }
+  }
+
   function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(read())); }
+    try { localStorage.setItem(KEY, JSON.stringify(snapshot())); }
     catch (e) { toast("ვერ შეინახა"); }
   }
   function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 500); }
@@ -145,18 +195,32 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
     toastEl.textContent = msg;
     toastEl.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { toastEl.hidden = true; }, 2200);
+    toastTimer = setTimeout(function () { toastEl.hidden = true; }, 2400);
   }
 
-  /* ---- აღდგენა ---- */
   try {
-    var raw = localStorage.getItem(KEY);
-    if (raw) applyMap(JSON.parse(raw));
+    var rawV2 = localStorage.getItem(KEY);
+    if (rawV2) {
+      restore(JSON.parse(rawV2));
+    } else {
+      var rawV1 = localStorage.getItem(LEGACY);
+      if (rawV1) {
+        var m1 = JSON.parse(rawV1);
+        eds.forEach(function (el, i) {
+          var v = m1["c" + i];
+          if (typeof v === "string") el.innerHTML = v;
+        });
+        save();
+        localStorage.removeItem(LEGACY);
+      }
+    }
   } catch (e) {}
 
-  /* ---- რეჟიმის ჩართვა/გამორთვა ---- */
-  var editing = false;
+  /* ---------- რეჟიმები ---------- */
+  var editing = false, moving = false;
+
   function setEditing(on) {
+    if (on && moving) setMoving(false);
     editing = on;
     document.body.classList.toggle("editing", on);
     eds.forEach(function (el) {
@@ -171,20 +235,30 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
     else { save(); toast("შენახულია"); }
   }
 
-  /* ---- მოვლენები ---- */
+  function setMoving(on) {
+    if (on && editing) setEditing(false);
+    moving = on;
+    document.body.classList.toggle("moving", on);
+    fab.classList.toggle("move", on);
+    fab.textContent = on ? "⇅" : "✎";
+    fab.setAttribute("aria-label", on ? "გადაადგილების დასრულება" : "რედაქტირება");
+    moveBtn.textContent = on ? "გადაადგილების დასრულება" : "გადაადგილება (drag & drop)";
+    if (on) toast("დაიჭირე ჩანაწერი და გადაიტანე სხვა დღეზე");
+    else { save(); toast("შენახულია"); }
+  }
+
+  /* ---------- ტექსტის რედაქტირება ---------- */
   function edOf(e) {
     var t = e.target;
     return (t && t.nodeType === 1 && t.hasAttribute && t.hasAttribute("data-ed")) ? t : null;
   }
 
   document.addEventListener("input", function (e) { if (edOf(e)) saveSoon(); });
-
   document.addEventListener("blur", function (e) { if (edOf(e)) save(); }, true);
 
   document.addEventListener("keydown", function (e) {
     if (!edOf(e)) return;
-    if (e.key === "Enter") { e.preventDefault(); e.target.blur(); }
-    if (e.key === "Escape") { e.preventDefault(); e.target.blur(); }
+    if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); e.target.blur(); }
   });
 
   document.addEventListener("paste", function (e) {
@@ -197,12 +271,213 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
   window.addEventListener("beforeunload", save);
   document.addEventListener("visibilitychange", function () { if (document.hidden) save(); });
 
-  /* ---- მოდელი: ექსპორტი / იმპორტი ---- */
+  /* ---------- Drag & drop ---------- */
+  var drag = null, drop = null;
+
+  function lessonRow(node) {
+    var tr = node && node.closest ? node.closest("tr") : null;
+    if (!tr || !table.contains(tr) || tr.classList.contains("day")) return null;
+    return tr;
+  }
+
+  function beginDrag() {
+    var tr = drag.tr, r = tr.getBoundingClientRect();
+    drag.active = true;
+    drag.ox = drag.x0 - r.left;
+    drag.oy = drag.y0 - r.top;
+
+    var holder = document.createElement("div");
+    holder.className = "drag-holder";
+    holder.style.left = r.left + "px";
+    holder.style.width = r.width + "px";
+
+    var tbl = document.createElement("table");
+    var tb = document.createElement("tbody");
+    var clone = tr.cloneNode(true);
+    clone.removeAttribute("data-rid");
+    Array.prototype.forEach.call(clone.querySelectorAll("[data-ed]"), function (el) {
+      el.removeAttribute("data-ed");
+      el.removeAttribute("contenteditable");
+    });
+    tb.appendChild(clone);
+    tbl.appendChild(tb);
+    holder.appendChild(tbl);
+    document.body.appendChild(holder);
+
+    drag.holder = holder;
+    tr.classList.add("drag-src");
+    document.body.classList.add("dragging");
+    moveGhost(drag.lx, drag.ly);
+    if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
+  }
+
+  function moveGhost(x, y) {
+    if (!drag || !drag.holder) return;
+    var base = parseFloat(drag.holder.style.left) || 0;
+    drag.holder.style.transform = "translate(" + (x - drag.ox - base) + "px," + (y - drag.oy) + "px)";
+  }
+
+  function clearMarkers() {
+    Array.prototype.forEach.call(table.querySelectorAll(".drop-before,.drop-after"), function (el) {
+      el.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function hover(x, y) {
+    var el = document.elementFromPoint(x, y);
+    var target = null;
+    var tb = el && el.closest ? el.closest("tbody") : null;
+    if (tb && table.contains(tb)) {
+      var row = el.closest("tr");
+      var lessons = Array.prototype.slice.call(tb.querySelectorAll("tr:not(.day)"));
+      if (!lessons.length) {
+        target = { tb: tb, ref: null, marker: null };
+      } else if (row && row.classList.contains("day")) {
+        target = { tb: tb, ref: lessons[0], marker: lessons[0], pos: "before" };
+      } else if (row && lessons.indexOf(row) >= 0) {
+        var rr = row.getBoundingClientRect();
+        if (y < rr.top + rr.height / 2) {
+          target = { tb: tb, ref: row, marker: row, pos: "before" };
+        } else {
+          var nx = row.nextElementSibling;
+          target = { tb: tb, ref: (nx && !nx.classList.contains("day")) ? nx : null, marker: row, pos: "after" };
+        }
+      } else {
+        target = { tb: tb, ref: null, marker: lessons[lessons.length - 1], pos: "after" };
+      }
+    }
+    clearMarkers();
+    if (target && target.marker) target.marker.classList.add(target.pos === "before" ? "drop-before" : "drop-after");
+    drop = target;
+  }
+
+  var scrollTimer = null, scrollDir = 0;
+
+  function edgeScroll(y) {
+    var h = window.innerHeight;
+    scrollDir = (y < 90) ? -1 : (y > h - 90 ? 1 : 0);
+    if (scrollDir && !scrollTimer) scrollTimer = setInterval(tickScroll, 16);
+    else if (!scrollDir && scrollTimer) { clearInterval(scrollTimer); scrollTimer = null; }
+  }
+
+  function tickScroll() {
+    if (!drag || !drag.active || !scrollDir) {
+      clearInterval(scrollTimer); scrollTimer = null; return;
+    }
+    var prev = window.scrollY;
+    window.scrollBy(0, scrollDir * 12);
+    if (window.scrollY !== prev) {
+      moveGhost(drag.lx, drag.ly);
+      hover(drag.lx, drag.ly);
+    }
+  }
+
+  function cleanupDrag() {
+    if (drag && drag.holder && drag.holder.parentNode) drag.holder.parentNode.removeChild(drag.holder);
+    if (drag && drag.tr) drag.tr.classList.remove("drag-src");
+    document.body.classList.remove("dragging");
+    clearMarkers();
+    scrollDir = 0;
+    if (scrollTimer) { clearInterval(scrollTimer); scrollTimer = null; }
+  }
+
+  function endDrag() {
+    var tr = drag.tr;
+    if (drop && drop.tb && table.contains(drop.tb)) {
+      if (drop.ref && drop.ref !== tr) drop.tb.insertBefore(tr, drop.ref);
+      else if (!drop.ref) drop.tb.appendChild(tr);
+    }
+    cleanupDrag();
+    drop = null;
+    save();
+    toast("გადატანილია · შენახულია");
+  }
+
+  function cancelDrag() {
+    if (!drag) return;
+    clearTimeout(drag.timer);
+    if (drag.active) cleanupDrag();
+    drag = null;
+    drop = null;
+  }
+
+  /* --- touch --- */
+  function tStart(e) {
+    if (!moving || drag || e.touches.length !== 1) return;
+    var tr = lessonRow(e.target);
+    if (!tr) return;
+    var t = e.touches[0];
+    drag = { tr: tr, x0: t.clientX, y0: t.clientY, lx: t.clientX, ly: t.clientY, active: false };
+    drag.timer = setTimeout(function () { if (drag && !drag.active) beginDrag(); }, 300);
+  }
+
+  function tMove(e) {
+    if (!drag) return;
+    var t = e.touches[0];
+    drag.lx = t.clientX; drag.ly = t.clientY;
+    if (!drag.active) {
+      var dx = t.clientX - drag.x0, dy = t.clientY - drag.y0;
+      if (dx * dx + dy * dy > 120) cancelDrag();
+      return;
+    }
+    e.preventDefault();
+    moveGhost(t.clientX, t.clientY);
+    hover(t.clientX, t.clientY);
+    edgeScroll(t.clientY);
+  }
+
+  function tEnd() {
+    if (!drag) return;
+    clearTimeout(drag.timer);
+    if (drag.active) endDrag();
+    drag = null;
+  }
+
+  /* --- mouse --- */
+  function mDown(e) {
+    if (!moving || drag || e.button !== 0) return;
+    var tr = lessonRow(e.target);
+    if (!tr) return;
+    drag = { tr: tr, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, active: false };
+    document.addEventListener("mousemove", mMove);
+    document.addEventListener("mouseup", mUp);
+  }
+
+  function mMove(e) {
+    if (!drag) return;
+    drag.lx = e.clientX; drag.ly = e.clientY;
+    if (!drag.active) {
+      var dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+      if (dx * dx + dy * dy < 30) return;
+      beginDrag();
+    }
+    e.preventDefault();
+    moveGhost(e.clientX, e.clientY);
+    hover(e.clientX, e.clientY);
+    edgeScroll(e.clientY);
+  }
+
+  function mUp() {
+    document.removeEventListener("mousemove", mMove);
+    document.removeEventListener("mouseup", mUp);
+    if (!drag) return;
+    if (drag.active) endDrag();
+    drag = null;
+  }
+
+  table.addEventListener("touchstart", tStart, { passive: true });
+  document.addEventListener("touchmove", tMove, { passive: false });
+  document.addEventListener("touchend", tEnd);
+  document.addEventListener("touchcancel", tEnd);
+  table.addEventListener("mousedown", mDown);
+  document.addEventListener("contextmenu", function (e) { if (drag && drag.active) e.preventDefault(); });
+
+  /* ---------- მოდელი: ექსპორტი / იმპორტი ---------- */
   function txt(el) { return el ? el.textContent.replace(/\s+/g, " ").trim() : ""; }
 
   function readModel() {
     var days = [];
-    Array.prototype.forEach.call(table.querySelectorAll("tbody"), function (tb) {
+    tbs.forEach(function (tb) {
       var head = tb.querySelector("tr.day th"), title = "", building = "";
       if (head) {
         var sm = head.querySelector("small");
@@ -225,14 +500,13 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
       });
       days.push({ title: title, building: building, lessons: lessons });
     });
-    return { app: "saauditorio-cxrili", version: 1, savedAt: new Date().toISOString(), days: days };
+    return { app: "saauditorio-cxrili", version: 2, savedAt: new Date().toISOString(), days: days };
   }
 
   function setText(el, v) { if (el && v != null) el.textContent = String(v); }
 
   function applyModel(m) {
     if (!m || !m.days || !m.days.length) return false;
-    var tbs = table.querySelectorAll("tbody");
     m.days.forEach(function (d, i) {
       var tb = tbs[i];
       if (!tb) return;
@@ -291,13 +565,15 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
     return out.join("\r\n");
   }
 
-  /* ---- ღილაკები ---- */
+  /* ---------- ინტერფეისი ---------- */
   function openSheet(open) { sheet.hidden = !open; }
 
   fab.addEventListener("click", function () {
     if (editing) { setEditing(false); return; }
+    if (moving) { setMoving(false); return; }
     openSheet(true);
   });
+
   sheet.addEventListener("click", function (e) { if (e.target === sheet) openSheet(false); });
 
   sheet.addEventListener("click", function (e) {
@@ -306,13 +582,22 @@ body.editing [data-ed]:empty::after{content:"…";color:#9db3a8}
     var act = b.getAttribute("data-act");
     openSheet(false);
     if (act === "edit") setEditing(!editing);
+    else if (act === "move") setMoving(!moving);
     else if (act === "export-json") download("cxrili-" + stamp() + ".json", JSON.stringify(readModel(), null, 2), "application/json;charset=utf-8");
     else if (act === "export-txt") download("cxrili-" + stamp() + ".txt", toPlainText(), "text/plain;charset=utf-8");
     else if (act === "import") fileInput.click();
     else if (act === "reset") {
       if (confirm("დავაბრუნო თავდაპირველი ცხრილი? შენი ცვლილებები წაიშლება.")) {
-        try { localStorage.removeItem(KEY); } catch (err) {}
+        try { localStorage.removeItem(KEY); localStorage.removeItem(LEGACY); } catch (err) {}
         eds.forEach(function (el, i) { el.innerHTML = ORIGINAL[i]; });
+        Object.keys(ORIG_ORDER).forEach(function (did) {
+          var tb = table.querySelector('tbody[data-did="' + did + '"]');
+          if (!tb) return;
+          ORIG_ORDER[did].forEach(function (rid) {
+            var tr = table.querySelector('tr[data-rid="' + rid + '"]');
+            if (tr) tb.appendChild(tr);
+          });
+        });
         toast("თავდაპირველი ცხრილი აღდგა");
       }
     }
